@@ -107,6 +107,18 @@ nsca.it = function(P, X = NULL, S = 2, maxiter = 65536, trace = TRUE, dcrit = 1e
     loss.old = loss.new
     
   }
+  # due to random starts solutions differ
+  if(is.null(X)){
+    udv = svd(U %*% t(V))
+    U = udv$u %*% diag(udv$d)
+    V = udv$v
+  }
+  else{
+    udv = svd(B %*% t(V))
+    B = udv$u %*% diag(udv$d)
+    U = X %*% B
+    V = udv$v
+  }
 
   output = list(
     P = P,
@@ -129,7 +141,8 @@ reg.nsca = function(P, X, S = 2, penalties = c(0,0,0), start = NULL, maxiter = 6
   # ------------------------------------------------------------------
   
   # if frequency data is given
-  if(sum(P) != 1){P = P/sum(P)}
+  if(sum(P) != 1){N = sum(P); P = P/sum(P)}
+  else{N = NULL}
   
   # some constant
   eps = 1e-10
@@ -228,8 +241,10 @@ reg.nsca = function(P, X, S = 2, penalties = c(0,0,0), start = NULL, maxiter = 6
   SS = sum( diag( t(r) %*% Dr %*% r ))
   
   output = list(
+    N = N,
     P = P,
     X = X,
+    penalties = penalties,
     Dr = Dr,
     S = S,
     PI = PI,
@@ -270,6 +285,9 @@ boot.pnsca = function(N, X, B = 200, S = 2, lambda.seq, ptype = 1, trace = FALSE
     }
   }
   
+  # vecN = matrix(N, ncol = 1)
+  # vecP = vecN/n
+  
   if(ptype == 1){
     penalties = cbind(lambda.seq, 0, 0)
   }
@@ -298,6 +316,11 @@ boot.pnsca = function(N, X, B = 200, S = 2, lambda.seq, ptype = 1, trace = FALSE
       train = t(class.ind(df[id, 1])) %*% class.ind(df[id, 2])
       test = t(class.ind(df[-id, 1])) %*% class.ind(df[-id, 2])
     }
+
+    
+    # train = matrix(rmultinom(n = 1, size = n, prob = vecP), ncol = ncol(N))
+    # test = pmax(N - train, 0)
+    # 
     
     for(l in 1:length(lambda.seq)){
       # fit on training
@@ -354,7 +377,7 @@ boot.pnsca = function(N, X, B = 200, S = 2, lambda.seq, ptype = 1, trace = FALSE
   cat("The minimum cross validated error is attained at", lambda.min, "\n")
   cat("The 1 SE rule is attained at", lambda.1se, "\n")
   
-  plt = ggplot(PEdf, aes(x = lambda.seq, y = m.error)) + 
+  plt = ggplot(PEdf, aes(x = penalty, y = m.error)) + 
     geom_point() + 
     geom_errorbar(aes(ymax = m.error + se.error, ymin = m.error - se.error)) +
     geom_vline(xintercept = lambda.min, colour = "darkblue", linetype = "dotted") + 
@@ -470,10 +493,9 @@ path.pnsca = function(N, X, S = 2, ptype = 1){
                                y = dim1, 
                                colour = Variable)) + geom_line() 
       
-      plt = plt + geom_text(data = Bslong[1:P, ], 
-                            aes(x = -0.005, y = dim1, label = Variable), 
-                            # colour = "black",
-                            check_overlap = TRUE)
+      plt = plt + geom_label_repel(data = Bslong[1:P, ], 
+                            aes(x = 0, y = dim1, label = Variable, hjust = 0), size = 1.5, fontface = "bold") 
+                            # colour = "black", check_overlap = TRUE)
 
       plt = plt  + 
         labs(x = "Penalty",
@@ -491,11 +513,9 @@ path.pnsca = function(N, X, S = 2, ptype = 1){
                                y = dim2, 
                                colour = Variable)) + geom_line()      
       
-      plt = plt + geom_text(data = Bslong[1:P, ], 
-                            aes(x = -0.005, y = dim2, label = Variable), 
-                            # colour = "black",
-                            check_overlap = TRUE)
-      
+      plt = plt + geom_label_repel(data = Bslong[1:P, ], 
+                                   aes(x = 0, y = dim2, label = Variable, hjust = 0), size = 1.5, fontface = "bold") 
+
       plt = plt  + 
         labs(x = "Penalty",
              y = "Estimates",
@@ -509,10 +529,8 @@ path.pnsca = function(N, X, S = 2, ptype = 1){
                                y = dim3, 
                                colour = Variable)) + geom_line()      
       
-      plt = plt + geom_text(data = Bslong[1:P, ], 
-                            aes(x = -0.005, y = dim3, label = Variable), 
-                            # colour = "black",
-                            check_overlap = TRUE)
+      plt = plt + geom_label_repel(data = Bslong[1:P, ], 
+                                   aes(x = 0, y = dim3, label = Variable, hjust = 0), size = 1.5, fontface = "bold") 
       
       plt = plt  + 
         labs(x = "Penalty",
@@ -541,4 +559,80 @@ path.pnsca = function(N, X, S = 2, ptype = 1){
     complexity.fit = complexity.fit,
     CH = chull.out
   )
+  return(output)
+}
+
+boot.regnsca = function(object, B = 200, trace = TRUE){
+  # get inpt from object
+  N = round(object$N * object$P)
+  X = object$X
+  S = object$S
+  penalties = object$penalties
+  start = list(B = object$B, V = object$V)
+
+  # make data frame from contingency table
+  n = sum(N)
+  df <-as.data.frame(matrix( nrow = object$N, ncol = 2 ))
+  id = 0
+  for(i in 1:nrow(N)){
+    for(j in 1:ncol(N)){
+      if(N[i,j] > 0){
+        # print(c(i,j, id, N[i,j]))
+        # if((i == 6) && (j = 1) ){
+        #   df[(id+1):(id + N[i,j]), ] = outer(rep(1, 15 ), c(i, j))
+        # }
+        # else{
+          df[(id+1):(id + N[i,j]), ] = outer(rep(1, N[i,j] ), c(i, j))
+        # }
+        id = id + N[i, j]
+      }
+    }
+  }
+  
+  # PE = SS = COM = matrix(NA, B, length(lambda.seq))
+  B.boot = array(NA, c(ncol(X), S, B))
+    
+  for(b in 1:B){
+    if(trace){cat("This is bootstrap sample", b, "from", B, "\n")}
+    # bootstrap sample from df
+    id = sample(1:n, n, replace = TRUE)
+    
+    # make contingency tables for training and test set
+    train = t(class.ind(df[id, 1])) %*% class.ind(df[id, 2])
+    test = t(class.ind(df[-id, 1])) %*% class.ind(df[-id, 2])
+    
+    while(!all(dim(train) == dim(test))){
+      # new bootstrap sample
+      id = sample(1:n, n, replace = TRUE)
+      # make contingency tables for training and test set
+      train = t(class.ind(df[id, 1])) %*% class.ind(df[id, 2])
+      test = t(class.ind(df[-id, 1])) %*% class.ind(df[-id, 2])
+    }
+    
+    out = reg.nsca(train, X = X, S = S, penalties = penalties, start = start, trace = FALSE)
+    B.boot[ , , b] = out$B
+  }
+  
+  B.ave = apply(B.boot, c(1,2), mean)
+  
+  st.num = 0
+  st.denom = 0
+  for(b in 1:B){
+    st.num = st.num + ssq(B.boot[, , b] - B.ave)
+    st.denom = st.denom + ssq(B.boot)
+  }
+  
+  ST = 1 - st.num/st.denom
+
+  output = list(
+    B.boot  = B.boot,
+    B.ave = B.ave,
+    ST = ST
+  )
+  return(output)
+}
+
+ssq = function(X){
+  ssq = sum(X^2)
+  return(ssq)
 }
